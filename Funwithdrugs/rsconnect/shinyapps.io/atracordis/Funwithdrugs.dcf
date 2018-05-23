@@ -1,0 +1,12 @@
+name: Funwithdrugs
+title: Funwithdrugs
+username:
+account: atracordis
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 347651
+bundleId: 1389428
+url: https://atracordis.shinyapps.io/Funwithdrugs/
+when: 1527093655.82707
+asMultiple: FALSE
+asStatic: FALSE
