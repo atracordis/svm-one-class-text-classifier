@@ -1,0 +1,591 @@
+---
+title: "Flexidrugs"
+output: 
+  flexdashboard::flex_dashboard:
+      theme: spacelab
+      storyboard: true
+      social: menu
+      source: embed
+      orientation: columns
+---
+
+
+Libraries {data-navmenu="Libraries and Functions"}
+===================================== 
+    
+Column
+-------------------------------------
+
+### Libraries 
+
+```{r Libraries, echo = TRUE}
+library(rmarkdown)
+library(flexdashboard)
+library(tm)
+library(plotly)
+library(qdap)
+library(e1071)
+library(SnowballC)
+library(wordcloud)
+library(RTextTools)
+library(tidytext)
+if(sessionInfo()['basePkgs']=="dplyr" | sessionInfo()['otherPkgs']=="dplyr"){
+  detach(package:dplyr, unload=TRUE)
+}
+library(plyr); library(dplyr)
+library(arules)
+library(arulesViz)
+library(SnowballC)
+library(class)
+library(wordcloud)
+library(igraph)
+library(RWeka)
+library(slam)
+library(mongolite)
+library(RMongo)
+library(jsonlite)
+```
+
+Column
+-------------------------------------
+###Libraries-Commentary
+
+Here we find the libraries we used. The most important libraries to cite are RMongo, to connect with our local mongodb server. Wordcloud to draw ourselves a wordcloud in order to see the most frequent worsd. Arulesviz to vizualise the association rules we would have extracted from the words. e1071 to implement SVM predictions, Rweka for the most frequent ngrams, slam to sum and visualize ngram frequencies, and tm being the most important as it made text cleaning a lot easier.
+
+-------------------------------------
+
+Tokenizers {data-navmenu="Libraries and Functions"}
+===================================== 
+    
+Column
+-------------------------------------
+
+### Tokenizers 
+    
+```{r Tokenizers, echo = TRUE}
+BigramTokenizer <- function(x) {RWeka::NGramTokenizer(x, RWeka::Weka_control(min=2, max=2))}
+ThreegramTokenizer <- function(x) {RWeka::NGramTokenizer(x, RWeka::Weka_control(min=3, max=3))}
+FourgramTokenizer <- function(x) {RWeka::NGramTokenizer(x, RWeka::Weka_control(min=4, max=4))}
+``` 
+
+Column
+-------------------------------------
+###Tokenizers-Commentary
+
+A tokenizer will transform every word into a "token", as in, a column. An ngram tokenizer will transform every n successive words into a token. n is a parameter we specify ourselves.
+
+Text cleaning {data-navmenu="Libraries and Functions"}
+===================================== 
+    
+Column
+-------------------------------------
+
+### Text cleaning 
+
+```{r cleaning, echo = TRUE}
+clean_corpus <- function(corpus){
+  corpus <- tm_map(corpus, content_transformer(tolower))
+  toSpace <- content_transformer(function(x, pattern) gsub(pattern, "", x))
+  corpus <- tm_map(corpus, toSpace, "[^a-zA-Z ]")
+  corpus <- tm_map(corpus, stripWhitespace)
+  corpus <- tm_map(corpus, removeWords, c("the","day","yes","yet", "like","œ","¤","â","will", "sale","get", "good","also","best","can",  "and", stopwords("english") ))
+  corpus <- tm_map(corpus, removeNumbers)
+  corpus <- tm_map(corpus, removePunctuation)
+  corpus <- tm_map(corpus, stemDocument, language = "english")
+  corpus <- tm_map(corpus, removeWords, c("product","offer","qualiti","usd","collect","huge","flipkartcom","price","order","list","onlin","pleas","ship","buy","com","flipkart","deliveri","cash","one","india","shop","read","set","print","new","page","come","requir","give","name","know","item","general","red","question","add","final","take","want","see","around","discount","content","two", "time","fe", "lostheaven","time", "use", "great", "necklac","rs" ,"alloy","top", "updat", "ab", "everi"))
+  return(corpus)
+}
+``` 
+
+Column
+-------------------------------------
+###Text-Cleaning-Commentary
+
+The three greatest parts in text cleaning are :
+
+-Removing symbols, extra spaces and overall non-latin characters
+
+-Word stemming, as in converting each word into its stem in order to make vizualisation and prediction easier.
+
+-Removing stopwords and neutral words both before stemming and after stemming, and this is an iterative process: every word we notice have no effect on prediction will be removed. We notice that both from vizualization and prediction. 
+
+
+Data Collection {data-navmenu="Libraries and Functions"}
+===================================== 
+    
+Column
+-------------------------------------
+
+### Data Collection and storage
+
+```{r Collection, message=FALSE, warning=FALSE, echo = TRUE}
+Mongo_descriptions = mongo(collection = "descriptions", db = "drugs") # create connection, database and collection
+Mongo_categories = mongo(collection = "categories", db = "drugs") # create connection, database and collection
+Mongo_nondrugdescriptions = mongo(collection = "descriptions", db = "nondrugs") # create connection, database and collection
+```
+
+```{r Collection2, message=FALSE, include = FALSE, warning=FALSE, echo=FALSE}
+Mongo_descriptions$drop()
+Mongo_categories$drop()
+Mongo_nondrugdescriptions$drop()
+
+AllDrugsCategory <- read.table("Category_New.csv", header=T,fill=T, encoding="utf-8", sep="\n", dec=".",quote = "", na.string="" )
+AllDrugsDescriptions <- read.table("Description_New.csv",stringsAsFactors = FALSE, header=T,fill=T, encoding="utf-8", sep="²", dec=".",quote = "", na.string="" )
+NonDrugs <- read.table("flipkart.csv", header=T,fill=T, encoding="utf-8", sep="\n", dec=".",quote = "", na.string="" )
+
+Mongo_descriptions$insert(AllDrugsDescriptions)
+Mongo_categories$insert(AllDrugsCategory)
+Mongo_nondrugdescriptions$insert(NonDrugs)
+```
+
+```{r Collection3, echo = TRUE}
+AllDrugsDescriptions=Mongo_descriptions$find()
+AllDrugsCategory=Mongo_categories$find()
+NonDrugs=Mongo_nondrugdescriptions$find()
+```
+    
+    
+Column
+-------------------------------------
+###Data Collection and storage-Commentary
+
+Our data comes from two main categories of locations: On one side, we have gathered scrapings from the deep web markets of drugs, and on another side, we have gathered data from a legal e-commerce website in India called Flipkart, specializing in clothing.
+
+It is to be noted that a pre-pre-processing using Microsoft's BI Suite and SSIS in order to isolate three columns, each in its own file: The drugs' description, the drugs' category and flipkart products' description. That was done so to avoid separator issues in R.
+
+We have chosen to put all our data into MongoDB because as a Big Data Environment, and as it is Document-Oriented, it is particularly suited to handle large amounts of real-time scraping data, and while currently we did not obtain this data directly through scraping, the data itself was obtained through scraping, and in the long run, our solution is only viable if it evolves in real time.
+
+Data Description
+===================================== 
+    
+Column
+-------------------------------------
+
+### Data Repartition
+
+```{r}
+typeslegal=c("Legal", "Illegal")
+numberslegal=c(19962, 19579)
+data=data.frame(typeslegal, numberslegal)      
+p <- plot_ly(data, labels = ~typeslegal, values = ~numberslegal, type = 'pie') %>%
+  layout(title = 'Products description label',
+         xaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE),
+         yaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE))
+p
+```
+
+###Drugs Categories
+
+```{r}
+cat=as.data.frame(table(AllDrugsCategory))
+cat=cat[order(cat$Freq, decreasing = T),]
+p<-  plot_ly(labels = ~head(cat$AllDrugsCategory, 10), values = ~head(cat$Freq, 10)) %>%
+  add_pie(hole = 0.6) %>%
+  layout(title = "Drug categories",  showlegend = F,
+         xaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE),
+         yaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE))
+p
+```
+
+Column
+-------------------------------------
+
+###Libraries
+
+
+We have three datasets. Two are for vizualization, training and testing, and they'll be treated in the current phases. One is for validation.
+
+We have taken data from Kaggle to get Flipkart.csv, a dataset containing 100000 products from an Indian retailer, Flipkart.
+
+We also have taken data from Gwern Branwen's Deep web archives, a researcher on the dark net that has been scraping e commerce websites over the past 8 years. We took data from third parties that already took charge of part of the data grouping in order to remove duplicate entries.
+
+Finally, we took a dataset from UCI Machine Learning Repository about an online retailer's products from the UK.
+
+All three datasets have one thing in common, which is a "description" column, which is the object of our study. 
+
+Flipkart and Agora have additional columns, one of which is "Category", detailing the product's category. We will use it in the validation phase when it comes to Agora in order to take a representative drug sample.
+
+The combined dataset will be balanced, as you can see in this chart.
+
+Besides, you can see that most of the dataset from Agora is divided between different kinds of drugs. We will have to extract them in order to start working.
+    
+Drugs Data Preparation {data-navmenu="Data Preparation"}
+===================================== 
+    
+Column
+-------------------------------------
+
+###Agora Products Data Preparation
+
+```{r dPreparation, echo = TRUE}
+AllDrugsDescriptions<-AllDrugsDescriptions$Item_Description_sep
+AllDrugsDescriptions<-AllDrugsDescriptions[1:109690]
+AllDrugsCategory<-AllDrugsCategory$Category
+AllDrugs<-data.frame(AllDrugsDescriptions, AllDrugsCategory)
+names(AllDrugs)=c("Description", "Category")
+AllDrugs$Description=as.character(AllDrugs$Description)
+AllDrugs=AllDrugs[which(AllDrugs$Category!="Drugs/Cannabis/W"),]
+AllDrugs=AllDrugs[which(AllDrugs$Category!="Drugs/Dissociatives/PCP"),]
+AllDrugs=AllDrugs[which(AllDrugs$Category!="Drugs/Barbiturates"),]
+AllDrugs=AllDrugs[which(substr(AllDrugs$Category,1,6)=="Drugs/"),]
+AllDrugs=AllDrugs[which(nchar (AllDrugs$Description)>202),]
+Drugs=AllDrugs$Description
+Drugs=as.character(Drugs)
+IllegalVector<- vector(mode="numeric", length=length(Drugs))
+IllegalVector=rep(0,length(Drugs))
+```
+
+Column
+-------------------------------------
+###Libraries
+
+When it comes to the data preparation, we will isolate the description and category in different vectors. We won't use the category now. It will be used for resampling later for validating our prediction. But to begin, we will remove categories with a very small number of drugs (lesser than 11). It is to be noted that Agora offers a variety of services, but we'd like to focus on drugs as they represent most of the product we're dealing with.
+
+We will only take descriptions with a certain length (202) as a quick glance on the data shows that certain descriptions are just filled with random symbols with no real information. By picking only descriptions with a certain length, we guarantee that a minimum of information is carried over.
+
+Our prediction target will be the product's legality, here, the "IllegalVector". It specifically answers the questions "is this legal?" with a blatant "no" (as in, 0).
+
+Flipkart products Data Preparation {data-navmenu="Data Preparation"}
+===================================== 
+    
+Column
+-------------------------------------
+
+### Flipkart products Data Preparation
+
+```{r nPreparation, echo = TRUE}
+names(NonDrugs)=c("Description")
+NonDrugs$Description=as.character(NonDrugs$Description)
+NonDrugs=NonDrugs[which(nchar (NonDrugs$Description)>180),]
+NonDrugs=as.character(NonDrugs)
+LegalVector<- vector(mode="numeric", length=length(NonDrugs))
+LegalVector=rep(1,19962)
+```
+
+Column
+-------------------------------------
+###Libraries
+
+Here we take only descriptions starting from a certain length. We have made several iterations in order to find a length that gives us as output a number of products similar to the one given by the Agora dataset, approximatively 20000 each, in order to have a more or less balanced dataset with which to make correct predictions.
+
+We will also generate a vector called "LegalVector" answering the question "is this legal" with a yes (which means 1).
+
+Data Integration {data-navmenu="Data Preparation"}
+=====================================     
+    
+Column
+-------------------------------------
+
+### Data Integration
+    
+```{r Integration, echo = TRUE}
+Everything=c(Drugs,NonDrugs)
+LegalIllegal=c(IllegalVector,LegalVector)
+MyData=data.frame(Everything,LegalIllegal)
+names(MyData)=c("Description", "Legality")
+```
+
+Column
+-------------------------------------
+###Data Integration
+
+Now, the aim is to generate a dataframe appropriately named Everything containing products from flipkart and drugs from agora with a suiting column named "Legality" answering the question "is this legal" for both types of products.
+
+Data Cleaning {data-navmenu="Data Preparation"}
+=====================================     
+    
+Column {.tabset}
+-------------------------------------
+
+### Data Cleaning
+    
+```{r Cleaningall, echo = TRUE}
+DirtyDescriptions=MyData$Description
+DirtyDescriptions_source <- VectorSource(DirtyDescriptions)
+DirtyDescriptions_corpus <- VCorpus(DirtyDescriptions_source)
+cleandrugs_corp <- clean_corpus(DirtyDescriptions_corpus)
+cleandrug_dtm <- DocumentTermMatrix(cleandrugs_corp, control = list(weighting = weightTfIdf))
+cleandrug_dtm <- removeSparseTerms(cleandrug_dtm, 0.995)
+```
+
+### Drugs Cleaning
+
+```{r dcleaning, echo = TRUE}
+DirtyDescriptionsDrugs_source <- VectorSource(Drugs)
+DirtyDescriptionsDrugs_corpus <- VCorpus(DirtyDescriptionsDrugs_source)
+cleandrugs_corp_Drugs <- clean_corpus(DirtyDescriptionsDrugs_corpus)
+cleandrugdrugs_dtm <- DocumentTermMatrix(cleandrugs_corp_Drugs, control = list(weighting = weightTfIdf))
+cleandrugdrugs_dtm <- removeSparseTerms(cleandrugdrugs_dtm, 0.95)
+```
+
+### Non Drugs Cleaning
+
+```{r ncleaning, echo=TRUE}
+DirtyDescriptionsNonDrugs_source <- VectorSource(NonDrugs)
+DirtyDescriptionsNonDrugs_corpus <- VCorpus(DirtyDescriptionsNonDrugs_source)
+DirtyDescriptionsNonDrugs_corpus <- clean_corpus(DirtyDescriptionsNonDrugs_corpus)
+cleandrugnondrugs_dtm <- DocumentTermMatrix(DirtyDescriptionsNonDrugs_corpus, control = list(weighting = weightTfIdf))
+cleandrugnondrugs_dtm <- removeSparseTerms(cleandrugnondrugs_dtm, 0.95)
+cleandrugnondrugs_tdm <- TermDocumentMatrix(DirtyDescriptionsNonDrugs_corpus, control = list(weighting = weightTfIdf))
+cleandrugnondrugs_tdm <- removeSparseTerms(cleandrugnondrugs_tdm, 0.98)
+
+```
+
+
+Column
+-------------------------------------
+###Data-Cleaning Commentary
+
+Now we move on to cleaning our data using our function clean_corpus. But that is only the first step: we will generate a Document Term Matrix using the weighting method "term frequency - inverse document frequency", as frequent items do not necessarily mean the most useful items, and unfrequent items do not mean useless items. 
+
+We will remove sparse terms to avoid overfitting in our prediction later on. A special point to be noted here: Most drug terms are sparse, they don't appear often but their presence is almost always key to a successful prediction, thus we have a limit to how many sparse items can we actually remove. We have decided that if a term doesn't appear in at least 0.005 of the 40000 descriptions (as in, 200 documents), then it is considered sparse and will be removed. That's as much as we can go and it already removes quite a lot of terms.
+
+We will also do the same cleaning steps for the drugs and the flipkart products separately in order to be able to conduct correct data vizualization.
+
+Data Vizualization on Drugs {.storyboard} 
+===================================== 
+
+### WorldCloud
+```{r}
+freq_drugs = data.frame(sort(colSums(as.matrix(cleandrugdrugs_dtm)), decreasing=TRUE))
+wordcloud(rownames(freq_drugs), freq_drugs[,1], min.freq=5, max.words=50, colors=brewer.pal(1, "Dark2"))
+```
+
+***
+
+Here we see the Wordcloud of the drugs products. It contains the terms most used in the drug descriptions.
+
+We notice here "gram", which is understandable: Drug is so expensive everything is sold in grams. Or "pill"s as well.
+
+We notice "strain" as well. There are three main strains of mariuana, two of which are broadly available on the market.
+
+"mdma" is another term for ecstasy. "profil" comes from "profiline", a known blood clotter.
+
+"high" is what most people are looking for on this website.
+
+"pure" is when it comes to crystal meth and mariuana, which are defined by a certain purity. "white" here refers to coaine. It can also refer to other drugs beyond our knowledge. 
+
+"grade" refers to a way of describing the quality of a drug. "bud" refers to the buds of mariuana plants.
+
+###Bigram frequencies Leaflet 
+
+```{r}
+options(mc.cores=1)
+drugs_dtm_drugs.2g <- DocumentTermMatrix(cleandrugs_corp_Drugs, control = list(weighting = weightTfIdf, tokenize = BigramTokenizer))
+sums_drugs.2g <- colapply_simple_triplet_matrix(drugs_dtm_drugs.2g,FUN=sum)
+sums_drugs.2g <- sort(sums_drugs.2g, decreasing=T)
+
+p_bigram <- plot_ly(
+  x = head(names(sums_drugs.2g),10),
+  y = head(sums_drugs.2g,10),
+  name = "BiGram Barplot",
+  type = "bar"
+)
+p_bigram
+```
+
+*** 
+ 
+"ciali" and "viagra" are two drugs used to combat erectile dysfunction. "stk" is a known blood thinner used to declot the blood during a heart attack. "Blue Dream" refers to a strain of cannabis."kush" refers to another strain of cannabis. "xtc" is another term for ecstasy. "g" refers to the GHB, the dreaded rape drug. 
+
+###Trigram frequencies  
+
+
+```{r}
+options(mc.cores=1)
+drugs_dtm_drugs.3g <- DocumentTermMatrix(cleandrugs_corp_Drugs, control = list(weighting = weightTfIdf, tokenize = ThreegramTokenizer))
+sums_drugs.3g <- colapply_simple_triplet_matrix(drugs_dtm_drugs.3g,FUN=sum)
+sums_drugs.3g <- sort(sums_drugs.3g, decreasing=T)
+
+p_trigram <- plot_ly(
+  x = head(names(sums_drugs.3g),10),
+  y = head(sums_drugs.3g,10),
+  name = "TriGram Barplot",
+  type = "bar"
+)
+p_trigram
+```
+
+*** 
+
+"chemic manufactur firstclass" here speaks of the drug's quality. "stay escrow term" speaks of escrow, a way to funnel funds anonymously and safely. "postag satisfact guarante" says that the goods will be delivered anonymously and safely."nespresso amount x" says that the seller is selling x amounts of cafeine.
+
+###Fourgram frequencies 
+
+
+```{r}
+options(mc.cores=1)
+drugs_dtm_drugs.4g <- DocumentTermMatrix(cleandrugs_corp_Drugs, control = list(weighting = weightTfIdf, tokenize = FourgramTokenizer))
+sums_drugs.4g <- colapply_simple_triplet_matrix(drugs_dtm_drugs.4g,FUN=sum)
+sums_drugs.4g <- sort(sums_drugs.4g, decreasing=T)
+
+p_fourgram <- plot_ly(
+  x = head(names(sums_drugs.4g),10),
+  y = head(sums_drugs.4g,10),
+  name = "FourGram Barplot",
+  type = "bar"
+)
+p_fourgram
+```
+
+***
+
+"ketamine svariant puriti pure" refers to Esketamine, a variant of the drug ketamine. "chinese chemic manufactur firstclass" refers to the fact that most of the chemicals are of chinese origin. We do notice that there are drugs that appear often in the ngram. It is because of the fact that salesmen on agora often say the drug's name several times in the same description for clarity and research. We cannot, however, say that this behaviour will be common among all drug dealers on the internet or people that want to sell illegal goods in general.
+
+###Association rules 
+
+
+```{r cache=FALSE, results=FALSE,  comment=FALSE, warning=FALSE} 
+Xdrug <- as.matrix(cleandrugdrugs_dtm)
+dataDrug <- as.data.frame(Xdrug)
+for(b in colnames(dataDrug)) dataDrug[[b]] <- as.logical(dataDrug[[b]])
+transDrug <- as(dataDrug, "transactions")
+basket_rules_drug<-apriori(transDrug,parameter=list(sup=0.001,conf=0.6,target="rules"))
+wdrug=as(basket_rules_drug,"data.frame")
+wruleslife=data.frame(wdrug$rules, wdrug$lift)
+wruleslife=wruleslife[order(wruleslife$wdrug.lift, decreasing=T),]
+liftdrugs=wruleslife$wdrug.lift
+rulesdrugs=wruleslife$wdrug.rules
+ 
+```
+
+
+```{r}
+
+  plotly_arules(basket_rules_drug, jitter = 10,method="scatterplot",
+                marker = list(opacity = .7, size = 10, symbol = 1),
+                colors = c("green", "red"))
+```
+
+
+
+***
+
+Now if we take a look at associations between different words, it might lead to something.
+
+Since words in drug products aren't very frequent, it makes sense to see there are very few associations overall. It is good to notice that ecstasy is linked to profilline and to getting high, which is totally not helpful.
+
+
+###Association rules 
+
+
+```{r comment=FALSE, warning=FALSE} 
+inspectDT(basket_rules_drug)
+```
+
+***
+
+The table detailing the association rules is not helpful either.
+
+
+Data Vizualization on non Drugs {.storyboard} 
+===================================== 
+
+### WorldCloud
+
+```{r}
+freq_nondrugs = data.frame(sort(colSums(as.matrix(cleandrugnondrugs_dtm)), decreasing=TRUE))
+wordcloud(rownames(freq_nondrugs), freq_nondrugs[,1], max.words=50, colors=brewer.pal(1, "Dark2"))
+```
+
+***
+
+The first thing we do notice here comparatively to the drugs wordcloud, is that it contains way more words. It means that words generally do not meet the threshold when it comes to drug products. That also means that there is a wide variety in drugs and their categories and it will make the prediction more difficult as we'll need to catch every alternative.
+
+"genuine", "free", "guarantee", "men", "casual, "shirt", "tshirt", are words that appear pretty often. What we can notice is that since flipkart mostly sells clothes, it is natural to find clothes related vocabulary.
+
+### Bigram Frequencies
+
+```{r}
+options(mc.cores=1)
+drugs_dtm_nondrugs.2g <- DocumentTermMatrix(DirtyDescriptionsNonDrugs_corpus, control = list(weighting = weightTfIdf, tokenize = BigramTokenizer))
+sums_nondrugs.2g <- colapply_simple_triplet_matrix(drugs_dtm_nondrugs.2g,FUN=sum)
+sums_nondrugs.2g <- sort(sums_nondrugs.2g, decreasing=T)
+
+p_bifourgram_non_drug <- plot_ly(
+  x = head(names(sums_nondrugs.2g),10),
+  y = head(sums_nondrugs.2g,10),
+  name = "BiGram Barplot",
+  type = "bar"
+)
+p_bifourgram_non_drug
+```
+
+***
+
+We notice that the highest rated succession of words is either genuine replace, guarantee free, replace guarantee. Anything else pales in comparison. Perhaps trigram might tell us something more?
+
+### Trigram Frequencies
+
+```{r}
+options(mc.cores=1)
+drugs_dtm_nondrugs.3g <- DocumentTermMatrix(DirtyDescriptionsNonDrugs_corpus, control = list(weighting = weightTfIdf, tokenize = ThreegramTokenizer))
+sums_nondrugs.3g <- colapply_simple_triplet_matrix(drugs_dtm_nondrugs.3g,FUN=sum)
+sums_nondrugs.3g <- sort(sums_nondrugs.3g, decreasing=T)
+
+p_trifourgram_non_drug <- plot_ly(
+  x = head(names(sums_nondrugs.3g),10),
+  y = head(sums_nondrugs.3g,10),
+  name = "TriGram Barplot",
+  type = "bar"
+)
+p_trifourgram_non_drug
+```
+
+***
+
+Here, we can't say much as it's obvious that most articles are clothes. However, it is to be noticed that the succession "apparel brand cloth" is fairly common. Descriptions are an indicator of what people want to hear, as the writers of these descriptions are marketers who study what people want to hear to give it to them. Thus, we can see that in the indian market, people are interested by brand names - as they are elsewhere. However, we don't notice any particular brand in the wordcloud which makes this suspicious. It makes us think that they're interested by the idea of the brand, or that no brand is dominant on flipkart.
+
+The other thing we noticed is "genuine replace guarantee" and "replace guarantee free" which says that people are attracted to offers that allow them to have a guarantee that their products will be replaced for free if they're not satisfied.
+
+### Fourgram Frequencies
+
+```{r}
+options(mc.cores=1)
+drugs_dtm_nondrugs.4g <- DocumentTermMatrix(DirtyDescriptionsNonDrugs_corpus, control = list(weighting = weightTfIdf, tokenize = FourgramTokenizer))
+sums_nondrugs.4g <- colapply_simple_triplet_matrix(drugs_dtm_nondrugs.4g,FUN=sum)
+sums_nondrugs.4g <- sort(sums_nondrugs.4g, decreasing=T)
+p_fourfourgram_non_drug <- plot_ly(
+  x = head(names(sums_nondrugs.4g),10),
+  y = head(sums_nondrugs.4g,10),
+  name = "FourGram Barplot",
+  type = "bar"
+)
+p_fourfourgram_non_drug
+```
+
+***
+
+The fourgram gives us something very interesting, a confirmation of our hypothesis in the trigram. People mostly search for genuine products that they can replace for free.
+
+###Scatterplot Associativity
+
+```{r cache=FALSE, results=FALSE,  comment=FALSE, warning=FALSE} 
+Xnondrug <- as.matrix(cleandrugnondrugs_dtm)
+datanonDrug <- as.data.frame(Xnondrug)
+for(b in colnames(datanonDrug)) datanonDrug[[b]] <- as.logical(datanonDrug[[b]])
+transnonDrug <- as(datanonDrug, "transactions")
+basket_rules_nondrug<-apriori(transnonDrug,parameter=list(sup=0.15,conf=0.6,target="rules"))
+
+```
+
+```{r}
+  plotly_arules(basket_rules_nondrug, jitter = 10,method="scatterplot",
+                marker = list(opacity = .7, size = 10, symbol = 1),
+                colors = c("green", "red"))
+```
+
+***
+
+The associativity scatterplot gives us a certain idea, that as opposed to the drugs dataset from agora, the words' in flipkart are almost always repeting around the same angle. Same words, different description.
+
+###Association rules Datatable
+
+```{r comment=FALSE, warning=FALSE} 
+
+inspectDT(basket_rules_nondrug)
+```
+
+***
+
+The table further confirms our suspicions. This will make the prediction task more delicate, as the drugs dataset is highly sparse, but the clothes dataset is totally the opposite.  

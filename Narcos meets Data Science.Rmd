@@ -1,0 +1,246 @@
+---
+title: "Narcos meets Data Science"
+author: "Wajd"
+date: "16 mars 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown 
+```{r cars}
+library(stringr)
+library(tm)
+library(qdap)
+library(e1071)
+library(SnowballC)
+library(wordcloud)
+library(RTextTools)
+library(tidytext)
+if(sessionInfo()['basePkgs']=="dplyr" | sessionInfo()['otherPkgs']=="dplyr"){
+  detach(package:dplyr, unload=TRUE)
+}
+library(plyr); library(dplyr)
+library(arules)
+library(SnowballC)
+library(class)
+library(wordcloud)
+library(igraph)
+library(RWeka)
+library(slam)
+library(mongolite)
+library(RMongo)
+library(jsonlite)
+
+
+
+clean_corpus <- function(corpus){
+  corpus <- tm_map(corpus, content_transformer(tolower))
+  
+  toSpace <- content_transformer(function(x, pattern) gsub(pattern, "", x))
+  corpus <- tm_map(corpus, toSpace, "[^a-zA-Z ]")
+  corpus <- tm_map(corpus, toSpace, "â")
+  corpus <- tm_map(corpus, toSpace, "ª")
+  corpus <- tm_map(corpus, toSpace, "œ")
+  corpus <- tm_map(corpus, toSpace, "¤")
+  
+  #weird="âœªâ¤âœªâ¤âœªâ¤âœªâ¤âœªâ¤âœªâ¤âœªâ¤âœªâ¤âœªâ¤âœªâ¤âœªâ¤âœª"
+  #Remove profane words
+  #First get the list of bad words
+  #bwdat<-read.table("en_bws.txt", header=FALSE, sep="\n", strip.white=TRUE)
+  # names(bwdat)<-"Bad Words"
+  #  corpus<- tm_map(corpus, removeWords, bwdat[,1])
+  
+  corpus <- tm_map(corpus, stripWhitespace)
+  corpus <- tm_map(corpus, removeWords, c("the","day","yes","yet", "like","œ","¤","â","will", "sale","get", "good","also","best","can",  "and", stopwords("english") ))
+  corpus <- tm_map(corpus, removeNumbers)
+  corpus <- tm_map(corpus, removePunctuation)
+
+  corpus <- tm_map(corpus, stemDocument, language = "english")
+  corpus <- tm_map(corpus, removeWords, c("usd","collect","huge","flipkartcom","price","order","list","onlin","pleas","ship","buy","com","flipkart","deliveri","cash","one","india","shop","read","set","print","new","page","come","requir","give","name","know","item","general","red","question","add","final","take","want","see","around","discount","content","two"))
+  
+  return(corpus)
+}
+
+
+
+AllDrugsCategory <- read.table("Category_New.csv", header=T,fill=T, encoding="utf-8", sep="\n", dec=".",quote = "", na.string="" )
+AllDrugsDescriptions <- read.table("Description_New.csv",stringsAsFactors = FALSE, header=T,fill=T, encoding="utf-8", sep="²", dec=".",quote = "", na.string="" )
+
+AllDrugsDescriptions<-AllDrugsDescriptions[1:109690,]
+AllDrugsDescriptions<-AllDrugsDescriptions$Item.Description.sep
+AllDrugsCategory<-AllDrugsCategory$Category
+
+AllDrugs<-data.frame(AllDrugsDescriptions, AllDrugsCategory)
+names(AllDrugs)=c("Description", "Category")
+AllDrugs$Description=as.character(AllDrugs$Description)
+AllDrugs=AllDrugs[which(AllDrugs$Category!="Drugs/Cannabis/W"),]
+AllDrugs=AllDrugs[which(AllDrugs$Category!="Drugs/Dissociatives/PCP"),]
+AllDrugs=AllDrugs[which(AllDrugs$Category!="Drugs/Barbiturates"),]
+
+
+AllDrugs=AllDrugs[which(substr(AllDrugs$Category,1,6)=="Drugs/"),]
+
+
+AllDrugs=AllDrugs[which(nchar (AllDrugs$Description)>202),]
+AllDrugs$Category=droplevels(AllDrugs$Category)
+
+
+
+NonDrugs <- read.table("flipkart.csv", header=T,fill=T, encoding="utf-8", sep="\n", dec=".",quote = "", na.string="" )
+names(NonDrugs)=c("Description")
+NonDrugs$Description=as.character(NonDrugs$Description)
+NonDrugs=NonDrugs[which(nchar (NonDrugs$Description)>180),]
+
+
+Drugs=AllDrugs$Description
+Drugs=as.character(Drugs)
+NonDrugs=NonDrugs
+NonDrugs=as.character(NonDrugs)
+
+LegalVector<- vector(mode="numeric", length=19962)
+IllegalVector<- vector(mode="numeric", length=19579)
+IllegalVector=rep(0,19579)
+LegalVector=rep(1,19962)
+Everything=c(Drugs,NonDrugs)
+LegalIllegal=c(IllegalVector,LegalVector)
+
+MyData=data.frame(Everything,LegalIllegal)
+names(MyData)=c("Description", "Legality")
+
+
+
+DirtyDescriptions=MyData$Description
+#I need a corpus
+DirtyDescriptions_source <- VectorSource(DirtyDescriptions)
+DirtyDescriptions_corpus <- VCorpus(DirtyDescriptions_source)
+#A clean corpus
+cleandrugs_corp <- clean_corpus(DirtyDescriptions_corpus)
+
+#Document Term Matrix, because we need to be organized folk
+cleandrug_dtm <- DocumentTermMatrix(cleandrugs_corp, control = list(weighting = weightTfIdf))
+#I hate useless words
+cleandrug_dtm <- removeSparseTerms(cleandrug_dtm, 0.995)
+
+
+
+target=MyData$Legality
+y=as.numeric(target)
+y=as.factor(y)
+X <- as.matrix(cleandrug_dtm)
+data <- as.data.frame(cbind(y,X))
+train.index <- sample(1:length(target), size=floor(.8*length(target)), replace=FALSE) 
+train <- data[train.index,]
+test <- data[-train.index,]
+
+#modelsvm <- tune(svm, train.x=X, train.y=y, kernel="radial", ranges=list(cost=10^(-2:2), gamma=2^(-2:2)))
+
+#write.svm(model, svm.file = "drugs-classifier.svm", scale.file = "drugs-classifier.scale")
+
+
+sv <- svm(y~., train, type="C-classification", kernel="linear", cost=1, gamma=0.2)
+table(Pred=predict(sv, test[,-1]) , True=test$y)
+table(Pred=predict(sv, train[,-1]) , True=train$y)
+
+
+vec=colnames(X)
+SampleDrugs <- read.table("SampleData.csv", header=T,fill=T, encoding="utf-8", sep="\n", dec=".",quote = "", na.string="" )
+names(SampleDrugs)=c("Description")
+SampleDrugs$Description=as.character(SampleDrugs$Description)
+SampleDrugs$Description=stemmer(SampleDrugs$Description)
+
+
+SampleDrugs$Description=lapply(SampleDrugs$Description, function(x) {
+  x <- unlist(strsplit(x, " "))
+  x <- x[tolower(x) %in% vec]
+  x<-paste(x,collapse=" ")
+})
+SampleDrugs=SampleDrugs$Description
+
+AllDrugsCategory <- read.table("Category_New.csv", header=T,fill=T, encoding="utf-8", sep="\n", dec=".",quote = "", na.string="" )
+AllDrugsDescriptions <- read.table("Description_New.csv",stringsAsFactors = FALSE, header=T,fill=T, encoding="utf-8", sep="²", dec=".",quote = "", na.string="" )
+AllDrugsDescriptions<-AllDrugsDescriptions[1:109690,]
+AllDrugsDescriptions<-AllDrugsDescriptions$Item.Description.sep
+AllDrugsCategory<-AllDrugsCategory$Category
+AllDrugs<-data.frame(AllDrugsDescriptions, AllDrugsCategory)
+names(AllDrugs)=c("Description", "Category")
+AllDrugs$Description=as.character(AllDrugs$Description)
+AllDrugs=AllDrugs[which(AllDrugs$Category!="Drugs/Cannabis/W"),]
+AllDrugs=AllDrugs[which(AllDrugs$Category!="Drugs/Dissociatives/PCP"),]
+AllDrugs=AllDrugs[which(AllDrugs$Category!="Drugs/Barbiturates"),]
+
+AllDrugs=AllDrugs[which(substr(AllDrugs$Category,1,6)=="Drugs/"),]
+
+AllDrugs=AllDrugs[which(nchar (AllDrugs$Description)>202),]
+
+
+AllDrugs=AllDrugs[which(AllDrugs$Category!="Drugs/Dissociatives/Other"),]
+AllDrugs=AllDrugs[which(AllDrugs$Category!="Drugs/Dissociatives/GBL"),]
+AllDrugs=AllDrugs[which(AllDrugs$Category!="Drugs/Psychedelics/Mescaline"),]
+AllDrugs=AllDrugs[which(AllDrugs$Category!="Drugs/Psychedelics/Salvia"),]
+AllDrugs$Category=droplevels(AllDrugs$Category)
+new_df <- AllDrugs %>% group_by(Category) %>% sample_n(12)
+
+vec
+new_df=new_df$Description
+new_df=as.character(new_df)
+
+
+new_df=stemmer(new_df)
+
+new_df=lapply(new_df, function(x) {
+  x <- unlist(strsplit(x, " "))
+  x <- x[tolower(x) %in% vec]
+  x<-paste(x,collapse=" ")
+})
+
+head(new_df)
+head(SampleDrugs)
+All=c(SampleDrugs, new_df)
+
+IllegalVector<- vector(mode="numeric", length=length(new_df))
+IllegalVector=rep(0,length(new_df))
+
+TooLegalVector<- vector(mode="numeric", length=length(SampleDrugs))
+TooLegalVector=rep(1,length(SampleDrugs))
+Legality=c(TooLegalVector,IllegalVector)
+
+
+MyDataEval=data.frame(All,Legality)
+
+summary(MyDataEval)
+names(MyData)=c("Description", "Legality")
+
+
+DirtyDescriptions_source <- VectorSource(All)
+DirtyDescriptions_corpus <- VCorpus(DirtyDescriptions_source)
+cleandrugs_corp <- clean_corpus(DirtyDescriptions_corpus)
+
+#Document Term Matrix, because we need to be organized folk
+cleandrug_dtm <- DocumentTermMatrix(cleandrugs_corp, control = list(weighting = weightTfIdf))
+
+
+target=Legality
+y=as.numeric(target)
+y=as.factor(y)
+X <- as.matrix(cleandrug_dtm)
+data <- as.data.frame(cbind(y,X))
+
+mat <- matrix(rep(0,nrow(data)*length(vec)), nrow = nrow(data), ncol =length(vec))
+
+colnames(mat)=vec
+mat<-as.data.frame(mat)
+
+columns_to_delete=colnames(as.data.frame(X))
+
+mat<-mat[ , !(names(mat) %in% columns_to_delete)]
+
+data<- as.data.frame(cbind(data,mat))
+
+
+table(Pred=predict(sv, data[,-1]) , True=data$y)
+
+```
+ 

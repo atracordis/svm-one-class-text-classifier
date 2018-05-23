@@ -1,0 +1,458 @@
+---
+title: "Sinaloas-DataViz"
+author: "Wajd"
+date: "15 février 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#LIBRAIRIES UTILISEES
+
+On commence par récupérer toutes les librairies utilisées. Pour n'en citer que les plus importantes, tm est utilisée pour nettoyer le texte, e1071 est utilisée pour utiliser SVM, wordcloud pour dessiner des wordcloud, dplyr pour manipuler des dataframes, rweka pour tokeniser nos mots, slam pour préparer des matrices de fréquences de mots.
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(stringr)
+library(tm)
+library(qdap)
+library(e1071)
+library(SnowballC)
+library(wordcloud)
+library(RTextTools)
+library(tidytext)
+library(dplyr)
+library(SnowballC)
+library(class)
+library(wordcloud)
+library(igraph)
+library(RWeka)
+library(slam)
+```
+
+#Fonctions personnalisées
+
+Les trois fonctions suivantes seront utilisées par la suite pour de la tokenisation de nos mots suivant les ngram, n étant le nombre de mots successifs.
+
+```{r weka tokenizers}
+BigramTokenizer <- function(x) {RWeka::NGramTokenizer(x, RWeka::Weka_control(min=2, max=2))}
+ThreegramTokenizer <- function(x) {RWeka::NGramTokenizer(x, RWeka::Weka_control(min=3, max=3))}
+FourgramTokenizer <- function(x) {RWeka::NGramTokenizer(x, RWeka::Weka_control(min=4, max=4))}
+```
+
+Normalize sera utilisée par la suite lors de la prédiction
+
+```{r normalization function}
+normalize <- function(x) {
+  y <- min(x)
+  z <- max(x)
+  temp <- x - y
+  temp1 <- (z - y)
+  temp2 <- temp / temp1
+  return(temp2)
+}
+
+```
+
+Clean corpus est une méthode utilisée pour nettoyer notre corpus de documents. En somme, elle retire les caractères non latins, transforme tout le corpus en minuscule, retire les mots inutiles, et fait du word stemming.
+
+```{r cleaning corpus}
+clean_corpus <- function(corpus){
+  #to lower, so that we forget about uppercase
+  corpus <- tm_map(corpus, content_transformer(tolower))
+    #anything that doesn't fit this pattern must be eradicated
+  toSpace <- content_transformer(function(x, pattern) gsub(pattern, " ", x))
+  corpus <- tm_map(corpus, toSpace, "[^a-zA-Z ]")
+  
+  #remove weird letters I found
+  toSpace <- content_transformer(function(x, pattern) gsub(pattern, "", x))
+  corpus <- tm_map(corpus, toSpace, "â")
+  toSpace <- content_transformer(function(x, pattern) gsub(pattern, "", x))
+  corpus <- tm_map(corpus, toSpace, "ª")
+  toSpace <- content_transformer(function(x, pattern) gsub(pattern, "", x))
+  corpus <- tm_map(corpus, toSpace, "œ")
+  toSpace <- content_transformer(function(x, pattern) gsub(pattern, "", x))
+  corpus <- tm_map(corpus, toSpace, "¤")
+  #Weird words I have never seen people use on the deep web
+  weird="âœªâ¤âœªâ¤âœªâ¤âœªâ¤âœªâ¤âœªâ¤âœªâ¤âœªâ¤âœªâ¤âœªâ¤âœªâ¤âœª"
+  corpus <- tm_map(corpus, stripWhitespace)
+  corpus <- tm_map(corpus, removeWords, c("the","day","yes","yet", "like","œ","¤","â","will", "sale","get", "good","also","best","can",  weird,  "and", stopwords("english") ))
+  corpus <- tm_map(corpus, removeNumbers)
+  corpus <- tm_map(corpus, removePunctuation)
+  
+  corpus <- tm_map(corpus, stemDocument, language = "english")
+  #more words I have noticed after stemming
+  corpus <- tm_map(corpus, removeWords, c("onlin","ship","buy","s","rs","ab","g","com","flipkart","deliveri","cash","one","india","shop","read","set","print","new","page","come","requir","give","name","know","item","general","usd","t","red","question","add","final","take","want","see","around","discount","content","two"))
+  return(corpus)
+}
+```
+
+#RECUPERATION DE LA DROGUE
+
+On récupère les données depuis deux fichiers csv prévus à l'avance, category_new et description_new, qui contiennent respectivement les catégories et les descriptions de drogues récupérées depuis le deep web.
+
+```{r getting_drugs}
+AllDrugsCategory <- read.table("Category_New.csv", header=T,fill=T, encoding="utf-8", sep="\n", dec=".",quote = "", na.string="" )
+AllDrugsDescriptions <- read.table("Description_New.csv",stringsAsFactors = FALSE, header=T,fill=T, encoding="utf-8", sep="²", dec=".",quote = "", na.string="" )
+
+```
+
+Certaines description n'ont pas de catégories. Celles ci sont déjà naturellement à la fin du document. Il suffit de ne récupérer que les n premières, n étant le nombre de catégories
+
+```{r fixingdrugs}
+AllDrugsDescriptions<-AllDrugsDescriptions[1:109690,]
+AllDrugsDescriptions<-AllDrugsDescriptions$Item.Description.sep
+AllDrugsCategory<-AllDrugsCategory$Category
+
+AllDrugs<-data.frame(AllDrugsDescriptions, AllDrugsCategory)
+names(AllDrugs)=c("Description", "Category")
+```
+
+Notre dataset contient tant des drogues que des armes. Nous ne nous intéresserons qu'aux drogues lors de cette étude
+
+```{r gettingONLYdrugs}
+AllDrugs=AllDrugs[which(substr(AllDrugs$Category,1,6)=="Drugs/"),]
+```
+
+Nous allons retirer également certains types de drogues très très peu représentés (1 ou deux individus)
+
+```{r getting_rid_of_useless_drugs}
+AllDrugs=AllDrugs[which(AllDrugs$Category!="Drugs/Cannabis/W"),]
+AllDrugs=AllDrugs[which(AllDrugs$Category!="Drugs/Dissociatives/PCP"),]
+AllDrugs=AllDrugs[which(AllDrugs$Category!="Drugs/Barbiturates"),]
+AllDrugs$Category=droplevels(AllDrugs$Category)
+```
+
+On récupère exclusivement les descriptions assez longues pour maximiser notre vocabulaire. De plus, certaines descriptions, sans être vides, contiennent à peine une phrase pleine de symboles, qui disparaissent lors du nettoyage. On a opté donc pour la récupération des descriptions les plus longues de manière à avoir autant de drogues que de non-drogues dans le dataset final
+
+```{r taking_only_big_kush}
+AllDrugs$Description=as.character(AllDrugs$Description)
+AllDrugs=AllDrugs[which(nchar(AllDrugs$Description)>202),]
+```
+
+#RECUPERATION DU DATASET NON DRUGS
+
+Flipkart est un vendeur en ligne indien aux produits variés. Le dataset ci dessous a déjà été nettoyé, récupérant uniquement les descriptions.
+
+```{r getting_clothes}
+NonDrugs <- read.table("flipkart.csv", header=T,fill=T, encoding="utf-8", sep="\n", dec=".",quote = "", na.string="" )
+names(NonDrugs)=c("Description")
+```
+
+On récupère des descriptions de façon à ne garder que 20000 lignes, afin d'avoir un dataset équilibré.
+
+```{r taking_only_long_dresses}
+NonDrugs$Description=as.character(NonDrugs$Description)
+NonDrugs=NonDrugs[which(nchar (NonDrugs$Description)>180),]
+```
+
+On prépare maintenant nos deux vecteurs drugs et nondrugs, contenant les descripions des produits légaux et illégaux
+
+```{r getting_kush_and_dress_ready}
+Drugs=AllDrugs$Description
+Drugs=as.character(Drugs)
+NonDrugs=NonDrugs
+NonDrugs=as.character(NonDrugs)
+```
+
+On crée également un vecteur legalvector et illegal vector, contenant 0 pour le vecteur illégal et 1 pour le vecteur légal. Le vecteur combiné LegalIllegal contient notre cible (target) de prédiction plus tard
+Le vecteur combiné Everything contient notre input pour la prédiction
+
+```{r calling_the_cops}
+LegalVector<- vector(mode="numeric", length=length(NonDrugs))
+IllegalVector<- vector(mode="numeric", length=length(Drugs))
+IllegalVector=rep(0,19579)
+LegalVector=rep(1,19962)
+Everything=c(Drugs,NonDrugs)
+LegalIllegal=c(IllegalVector,LegalVector)
+```
+
+MyData est le dataset qu'on utilisera pour la prédiction
+
+```{r setting_the_party}
+MyData=data.frame(Everything,LegalIllegal)
+names(MyData)=c("Description", "Legality")
+```
+
+On prépare les données de MyData dans un corpus
+
+```{r taking_the_people}
+DirtyDescriptions=MyData$Description
+#I need a corpus
+DirtyDescriptions_source <- VectorSource(DirtyDescriptions)
+DirtyDescriptions_corpus <- VCorpus(DirtyDescriptions_source)
+```
+
+On les nettoie pour ne garder que les mots les plus utiles
+
+```{r cleaning_the_people}
+#A clean corpus
+cleandrugs_corp <- clean_corpus(DirtyDescriptions_corpus)
+```
+
+On crée par la suite une Document term matrix, matrice avec des descriptions en ligne et des termes en colonne. 0 si le terme n'existe pas, 1 si le terme existe. On crée également une term document matrix, qui contient la transposée de la document term matrix.
+On nettoie les sparse terms, avec en paramètre 0.995. Ca veut dire que tout terme n'existant pas dans 0.005 des documents devra être supprimé. Ca permet d'éviter l'overfitting et de réduire le nombre d'inputs. On ne peut pas supprimer plus de termes, par contre, car le vocabulaire de la drogue est ultra spécifique. Les  termes les moins fréquents sont parfois les plus précis, et les plus fréquents sont parfois le bruit
+
+```{r bureaucracy_1}
+#Document Term Matrix, because we need to be organized folk
+cleandrug_dtm <- DocumentTermMatrix(cleandrugs_corp, control = list(weighting = weightTfIdf))
+#I hate useless words
+cleandrug_dtm <- removeSparseTerms(cleandrug_dtm, 0.995)
+cleandrug_tdm <- TermDocumentMatrix(cleandrugs_corp, control = list(weighting = weightTfIdf))
+```
+
+Sur ce, après avoir préparé et séparé correctement nos drogues, on passe à la dataviz
+
+#DATAVIZ DRUGS
+
+On a séparé les datasets en drogue et non drogue. On va faire une visualisation dessus.
+
+```{r dataviz_prepare_kush}
+DirtyDescriptionsDrugs_source <- VectorSource(Drugs)
+DirtyDescriptionsDrugs_corpus <- VCorpus(DirtyDescriptionsDrugs_source)
+#A clean corpus
+cleandrugs_corp_Drugs <- clean_corpus(DirtyDescriptionsDrugs_corpus)
+#Document Term Matrix, because we need to be organized folk
+cleandrugdrugs_dtm <- DocumentTermMatrix(cleandrugs_corp_Drugs, control = list(weighting = weightTfIdf))
+cleandrugdrugs_dtm <- removeSparseTerms(cleandrugdrugs_dtm, 0.95)
+```
+
+On aura aussi besoin d'une term document matrix, assez propre, pour faire un graphe des mots qui viennent le plus fréquemment ensemble.
+
+```{r dataviz_clean_drugs}
+#I hate useless words
+cleandrugdrugs_tdm <- TermDocumentMatrix(cleandrugs_corp_Drugs, control = list(weighting = weightTfIdf))
+cleandrugdrugs_tdm <- removeSparseTerms(cleandrugdrugs_tdm, 0.98)
+```
+
+On commence d'abord par voir les mots les plus fréquents
+
+```{r freq_drugs}
+findFreqTerms(cleandrugdrugs_dtm, 10)
+freq_drugs = data.frame(sort(colSums(as.matrix(cleandrugdrugs_dtm)), decreasing=TRUE))
+```
+
+et les dessiner dans un wordcloud
+
+```{r worldcloud_drugs}
+wordcloud(rownames(freq_drugs), freq_drugs[,1], max.words=50, colors=brewer.pal(1, "Dark2"))
+```
+
+Ensuite, on va voir le graphe qu'on a mentionné tout à l'heure, en transformant notre tdm en matrice classique et en sélectionnant juste les mots présents
+
+```{r preparing_the_drug_matrix}
+vizdrugsdrugs=as.matrix(cleandrugdrugs_tdm)
+vizdrugsdrugs[vizdrugsdrugs>=1] <- 1
+```
+
+on multiplier cette matrice par sa transposée pour pouvoir faire une matrice d'adjacence
+
+```{r adjacency_matrix_drugs}
+# transform into a term-term adjacency matrix
+vizdrugsdrugs <- vizdrugsdrugs %*% t(vizdrugsdrugs)
+```
+
+on sélectionne les 10 associations les plus fréquentes et on met le tout dans un graphe
+
+```{r best_kush}
+# inspect terms numbered 1 to 10
+somewords=vizdrugsdrugs[1:10,1:10]
+# build a graph from the above matrix
+g_drugs <- graph.adjacency(somewords, weighted=T, mode = "undirected")
+# remove loops
+g_drugs <- simplify(g_drugs)
+# set labels and degrees of vertices
+V(g_drugs)$label <- V(g_drugs)$name
+V(g_drugs)$degree <- degree(g_drugs)
+V(g_drugs)$label.cex <- 5 * V(g_drugs)$degree / max(V(g_drugs)$degree)+ .2
+set.seed(3952)
+layout1 <- layout.kamada.kawai(g_drugs)
+plot(g_drugs, layout=layout1)
+```
+
+on va créer les document term matrix tokenisés par bigram, trigram and fourgram, pour voir les séquences de mots les plus fréquentes
+
+```{r linked_kush_documents}
+# creating of document matrix
+options(mc.cores=1)
+drugs_dtm_drugs.2g <- DocumentTermMatrix(cleandrugs_corp_Drugs, control = list(weighting = weightTfIdf, tokenize = BigramTokenizer))
+options(mc.cores=1)
+drugs_dtm_drugs.3g <- DocumentTermMatrix(cleandrugs_corp_Drugs, control = list(weighting = weightTfIdf, tokenize = ThreegramTokenizer))
+options(mc.cores=1)
+drugs_dtm_drugs.4g <- DocumentTermMatrix(cleandrugs_corp_Drugs, control = list(weighting = weightTfIdf, tokenize = FourgramTokenizer))
+```
+
+On utilise slam pour pouvoir préparer la fréquence des successions des termes qui se répètent
+
+```{r sums_kush}
+# To get the bigram dist, we use the slam package for ops with simple triplet mat
+sums_drugs.2g <- colapply_simple_triplet_matrix(drugs_dtm_drugs.2g,FUN=sum)
+sums_drugs.2g <- sort(sums_drugs.2g, decreasing=T)
+
+sums_drugs.3g <- colapply_simple_triplet_matrix(drugs_dtm_drugs.3g,FUN=sum)
+sums_drugs.3g <- sort(sums_drugs.3g, decreasing=T)
+
+sums_drugs.4g <- colapply_simple_triplet_matrix(drugs_dtm_drugs.4g,FUN=sum)
+sums_drugs.4g <- sort(sums_drugs.4g, decreasing=T)
+```
+
+
+
+
+Fréquence bigram
+
+```{r plot_the_kush_in_bars2}
+
+par(las=2) # make label text perpendicular to axis
+par(mar=c(5,8,4,2)) # increase y-axis margin.
+barplot(head(sums_drugs.2g,10), main="Fréquence BigGram", horiz=TRUE,
+       names.arg=head(colnames(sums_drugs.2g),10),  cex.names=0.8)
+```
+
+Fréquence trigram
+
+```{r plot_the_kush_in_bars3}
+
+par(las=2) # make label text perpendicular to axis
+par(mar=c(5,8,4,2)) # increase y-axis margin.
+barplot(head(sums_drugs.3g,10), main="Fréquence trigram", horiz=TRUE,
+       names.arg=head(colnames(sums_drugs.3g),10),  cex.names=0.8)
+```
+
+Fréquence fourgram
+
+```{r plot_the_kush_in_bars4}
+
+par(las=2) # make label text perpendicular to axis
+par(mar=c(5,8,4,2)) # increase y-axis margin.
+barplot(head(sums_drugs.4g,10), main="Fréquence fourgram", horiz=TRUE,
+       names.arg=head(colnames(sums_drugs.4g),10),  cex.names=0.8)
+```
+
+#DATAVIZ NON DRUGS
+
+On passe maintenant à la visualisation des produits non drogues
+
+On commence par la préparation du corpus, du document term matrix et term document matrix
+
+```{r dataviz_nondrugs}
+DirtyDescriptionsNonDrugs_source <- VectorSource(NonDrugs)
+DirtyDescriptionsNonDrugs_corpus <- VCorpus(DirtyDescriptionsNonDrugs_source)
+#A clean corpus
+DirtyDescriptionsNonDrugs_corpus <- clean_corpus(DirtyDescriptionsNonDrugs_corpus)
+
+#Document Term Matrix, because we need to be organized folk
+cleandrugnondrugs_dtm <- DocumentTermMatrix(DirtyDescriptionsNonDrugs_corpus, control = list(weighting = weightTfIdf))
+#I hate useless words
+cleandrugnondrugs_dtm <- removeSparseTerms(cleandrugnondrugs_dtm, 0.95)
+```
+
+On prépare et nettoie la term document matrix
+
+```{r dataviz_tdm_nondrugs}
+cleandrugnondrugs_tdm <- TermDocumentMatrix(DirtyDescriptionsNonDrugs_corpus, control = list(weighting = weightTfIdf))
+cleandrugnondrugs_tdm <- removeSparseTerms(cleandrugnondrugs_tdm, 0.98)
+```
+
+On commence par étudier les mots les plus fréquents
+
+```{r freq_dresses}
+findFreqTerms(cleandrugnondrugs_tdm, 10)
+freq_drugs = data.frame(sort(colSums(as.matrix(cleandrugnondrugs_dtm)), decreasing=TRUE))
+wordcloud(rownames(freq_drugs), freq_drugs[,1], max.words=50, colors=brewer.pal(1, "Dark2"))
+```
+
+on passe ensuite à la visualisation des mots qui viennent ensemble. On ne prendra que les mots qui existent
+
+```{r dresses_matrix}
+vizdrugsnondrugs=as.matrix(cleandrugnondrugs_tdm)
+vizdrugsnondrugs[vizdrugsnondrugs>=1] <- 1
+```
+
+On multiplie la matrice par sa transposée
+
+```{r adjacent_dresses}
+# transform into a term-term adjacency matrix
+vizdrugsnondrugs <- vizdrugsnondrugs %*% t(vizdrugsnondrugs)
+```
+
+On prend le top dix des combinaisons les plus fréquentes
+
+```{r top_dresses}
+# inspect terms numbered 5 to 10
+morewords=vizdrugsnondrugs[1:10,1:10]
+```
+
+On va à présent visualiser un graphe contenant les mots qui viennent ensemble
+
+```{r top_dresses_matrix}
+# build a graph from the above matrix
+g_nondrugs <- graph.adjacency(morewords, weighted=T, mode = "undirected")
+# remove loops
+g_nondrugs <- simplify(g_nondrugs)
+# set labels and degrees of vertices
+V(g_nondrugs)$label <- V(g_nondrugs)$name
+V(g_nondrugs)$degree <- degree(g_nondrugs)
+V(g_nondrugs)$label.cex <- 5 * V(g_nondrugs)$degree / max(V(g_nondrugs)$degree)+ .2
+set.seed(3952)
+layout2 <- layout.kamada.kawai(g_nondrugs)
+plot(g_nondrugs, layout=layout2)
+```
+
+on va créer les document term matrix tokenisés par bigram, trigram and fourgram, pour voir les séquences de mots les plus fréquentes
+
+```{r dtm_dresses}
+# creating of document matrix
+options(mc.cores=1)
+drugs_dtm_nondrugs.2g <- DocumentTermMatrix(DirtyDescriptionsNonDrugs_corpus, control = list(weighting = weightTfIdf, tokenize = BigramTokenizer))
+options(mc.cores=1)
+drugs_dtm_nondrugs.3g <- DocumentTermMatrix(DirtyDescriptionsNonDrugs_corpus, control = list(weighting = weightTfIdf, tokenize = ThreegramTokenizer))
+options(mc.cores=1)
+drugs_dtm_nondrugs.4g <- DocumentTermMatrix(DirtyDescriptionsNonDrugs_corpus, control = list(weighting = weightTfIdf, tokenize = FourgramTokenizer))
+```
+
+On utilise slam pour pouvoir préparer la fréquence des successions des termes qui se répètent
+
+```{r sum_dresses}
+# To get the bigram dist, we use the slam package for ops with simple triplet mat
+sums_nondrugs.2g <- colapply_simple_triplet_matrix(drugs_dtm_nondrugs.2g,FUN=sum)
+sums_nondrugs.2g <- sort(sums_nondrugs.2g, decreasing=T)
+
+sums_nondrugs.3g <- colapply_simple_triplet_matrix(drugs_dtm_nondrugs.3g,FUN=sum)
+sums_nondrugs.3g <- sort(sums_nondrugs.3g, decreasing=T)
+
+sums_nondrugs.4g <- colapply_simple_triplet_matrix(drugs_dtm_nondrugs.4g,FUN=sum)
+sums_nondrugs.4g <- sort(sums_nondrugs.4g, decreasing=T)
+```
+
+On fait une petite manoeuvre pour éclaircir le futur graphe
+
+Fréquence bigram des non drogues
+
+```{r Frequency_bigrams}
+par(las=2) # make label text perpendicular to axis
+par(mar=c(5,8,4,2)) # increase y-axis margin.
+barplot(head(sums_nondrugs.2g,10), main="Frequency of bigrams", horiz=TRUE,
+        names.arg=head(colnames(sums_nondrugs.2g),10),  cex.names=0.8)
+```
+
+Fréquence trigram des non drogues
+
+```{r Frequency_trigrams}
+par(las=2) # make label text perpenicular to axis
+par(mar=c(5,8,4,2)) # increase y-axis margin.
+barplot(head(sums_nondrugs.3g,10), main="Frequency of trigrams", horiz=TRUE,
+        names.arg=head(colnames(sums_nondrugs.3g),10),  cex.names=0.8)
+```
+
+Fréquence fourgram des non drogues
+
+```{r Frequency_fourgrams}
+par(las=2) # make label text perpendicular to axis
+par(mar=c(5,8,4,2)) # increase y-axis margin.
+barplot(head(sums_nondrugs.4g,10), main="Frequency of fourgrams", horiz=TRUE,
+        names.arg=head(colnames(sums_nondrugs.4g),10),  cex.names=0.8)
+```
+
+
