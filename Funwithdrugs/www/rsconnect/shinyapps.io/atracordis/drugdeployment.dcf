@@ -1,0 +1,10 @@
+name: drugdeployment
+title:
+username:
+account: atracordis
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 331919
+bundleId: 1342868
+url: https://atracordis.shinyapps.io/drugdeployment/
+when: 1524823868.38409
